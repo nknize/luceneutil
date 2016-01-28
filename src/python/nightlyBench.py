@@ -460,7 +460,7 @@ DEBUG = '-debug' in sys.argv
 if DEBUG:
   NIGHTLY_DIR = 'trunk'
 else:
-  NIGHTLY_DIR = 'trunk.nightly'
+  NIGHTLY_DIR = constants.NIGHTLY_DIR  #'trunk.nightly'
 
 DIR_IMPL = 'MMapDirectory'
 
@@ -657,7 +657,8 @@ def run():
     os.chdir(constants.BENCH_BASE_DIR)
     luceneUtilRev = os.popen('git rev-parse HEAD').read().strip()
 
-    os.chdir('%s/%s' % (constants.BASE_DIR, NIGHTLY_DIR))
+    os.chdir('%s' % (NIGHTLY_DIR))
+    #os.chdir('%s/%s' % (constants.BASE_DIR, NIGHTLY_DIR))
     #runCommand('%s cleanup' % constants.SVN_EXE)
     runCommand('%s clean -xfd' % constants.GIT_EXE)
     for i in range(iters):
