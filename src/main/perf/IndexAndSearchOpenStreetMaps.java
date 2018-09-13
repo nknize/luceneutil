@@ -27,6 +27,7 @@ import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Paths;
+import java.text.ParseException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -47,11 +48,9 @@ import org.apache.lucene.document.Document;
 import org.apache.lucene.document.Field;
 import org.apache.lucene.document.LatLonDocValuesField;
 import org.apache.lucene.document.LatLonPoint;
+import org.apache.lucene.geo.*;
 import org.apache.lucene.search.LatLonPointPrototypeQueries;
 //import org.apache.lucene.geo.EarthDebugger;
-import org.apache.lucene.geo.GeoUtils;
-import org.apache.lucene.geo.Polygon;
-import org.apache.lucene.geo.Rectangle;
 import org.apache.lucene.index.CodecReader;
 import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.IndexReader;
@@ -79,7 +78,6 @@ import org.apache.lucene.search.SimpleCollector;
 import org.apache.lucene.search.Sort;
 import org.apache.lucene.search.TopFieldDocs;
 import org.apache.lucene.search.TotalHitCountCollector;
-import org.apache.lucene.search.TotalHits;
 import org.apache.lucene.spatial3d.Geo3DPoint;
 import org.apache.lucene.spatial3d.geom.GeoCircleFactory;
 import org.apache.lucene.spatial3d.geom.GeoPoint;
@@ -95,6 +93,7 @@ import org.apache.lucene.util.SloppyMath;
 import org.apache.lucene.util.bkd.BKDWriter;
 
 import org.apache.lucene.document.LatLonShape;
+import org.apache.lucene.document.LatLonShape.QueryRelation;
 import org.apache.lucene.document.Field;
 
 
@@ -152,6 +151,10 @@ public class IndexAndSearchOpenStreetMaps {
         break;
       case "ivera":
         INDEX_LOCATION = "/data/bkdtest";
+        DATA_LOCATION = "/data/";
+        break;
+      case "nknize":
+        INDEX_LOCATION = "/data/bkdtest/";
         DATA_LOCATION = "/data/";
         break;
       default:
@@ -407,7 +410,82 @@ public class IndexAndSearchOpenStreetMaps {
   }
 */
 
-  private static void createIndex(boolean fast, boolean doForceMerge, boolean doDistanceSort) throws IOException, InterruptedException {
+  private static void createPointIndex(String[] lines, final int count, AtomicLong totalCount, final boolean doDistanceSort, final IndexWriter w) throws IOException {
+    for(int i=0;i<count;i++) {
+      String[] parts = lines[i].split(",");
+      //long id = Long.parseLong(parts[0]);
+      double lat = Double.parseDouble(parts[1]);
+      double lon = Double.parseDouble(parts[2]);
+      Document doc = new Document();
+      if (useGeo3D || useGeo3DLarge) {
+        doc.add(new Geo3DPoint("point", lat, lon));
+      } else if (useDocValues) {
+        doc.add(new LatLonDocValuesField("point", lat, lon));
+      } else if (useShape) {
+        Field[] fields = LatLonShape.createIndexableFields("point", lat, lon);
+        for (Field f : fields) {
+          doc.add(f);
+        }
+      }  else {
+        doc.add(new LatLonPoint("point", lat, lon));
+        if (doDistanceSort) {
+          doc.add(new LatLonDocValuesField("point", lat, lon));
+        }
+      }
+      w.addDocument(doc);
+      long x = totalCount.incrementAndGet();
+      if (x % 1000000 == 0) {
+        System.out.println(x + "...");
+      }
+    }
+  }
+
+  private static void addShape(Object shape, final IndexWriter w) throws IOException {
+    Field[] fields;
+    if (shape instanceof Polygon) {
+      fields = LatLonShape.createIndexableFields("point", (Polygon)shape);
+    } else if (shape instanceof Line) {
+      fields = LatLonShape.createIndexableFields("point", (Line)shape);
+    } else if (shape instanceof double[]) {
+      double[] pt = (double[])shape;
+      fields = LatLonShape.createIndexableFields("point", pt[1], pt[0]);
+    } else {
+      throw new IllegalArgumentException("unknown shape");
+    }
+    Document doc = new Document();
+    for (Field f : fields) {
+      doc.add(f);
+    }
+    w.addDocument(doc);
+  }
+
+  private static void createShapeIndex(String[] lines, final int count, AtomicLong totalCount, final IndexWriter w) throws IOException, ParseException {
+    for(int i=0;i<count;i++) {
+      Object shape = SimpleWKTParser.parse(lines[i]);
+      if (shape instanceof Polygon[]) {
+        for (Polygon poly : (Polygon[])shape) {
+          addShape(poly, w);
+        }
+      } else if (shape instanceof Line[]) {
+        for (Line line : (Line[]) shape) {
+          addShape(line, w);
+        }
+      } else if (shape instanceof double[][]) {
+        double[][] pts = (double[][])shape;
+        for (int p=0; p<pts.length; ++p) {
+          addShape(pts[p], w);
+        }
+      } else {
+        addShape(shape, w);
+      }
+      long x = totalCount.incrementAndGet();
+      if (x % 1000000 == 0) {
+        System.out.println(x + "...");
+      }
+    }
+  }
+
+  private static void createIndex(boolean fast, boolean doForceMerge, final boolean doDistanceSort) throws IOException, InterruptedException {
 
     CharsetDecoder decoder = StandardCharsets.UTF_8.newDecoder()
         .onMalformedInput(CodingErrorAction.REPORT)
@@ -415,12 +493,16 @@ public class IndexAndSearchOpenStreetMaps {
 
     int BUFFER_SIZE = 1 << 16;     // 64K
     InputStream is;
-    if (SMALL) {
-      is = Files.newInputStream(Paths.get(DATA_LOCATION, "latlon.subsetPlusAllLondon.txt"));
+    if (useShape) {
+     is = Files.newInputStream(Paths.get(DATA_LOCATION, "planetOSMShapes.subset.wkt"));
     } else {
-      is = Files.newInputStream(Paths.get(DATA_LOCATION, "latlon.txt"));
+      if (SMALL) {
+        is = Files.newInputStream(Paths.get(DATA_LOCATION, "latlon.subsetPlusAllLondon.txt"));
+      } else {
+        is = Files.newInputStream(Paths.get(DATA_LOCATION, "latlon.txt"));
+      }
     }
-    BufferedReader reader = new BufferedReader(new InputStreamReader(is, decoder), BUFFER_SIZE);
+    final BufferedReader reader = new BufferedReader(new InputStreamReader(is, decoder), BUFFER_SIZE);
 
     int NUM_THREADS;
     if (fast) {
@@ -429,10 +511,10 @@ public class IndexAndSearchOpenStreetMaps {
       NUM_THREADS = 1;
     }
 
-    int CHUNK = 10000;
+    final int CHUNK = 10000;
 
     long t0 = System.nanoTime();
-    AtomicLong totalCount = new AtomicLong();
+    final AtomicLong totalCount = new AtomicLong();
 
     for(int part=0;part<NUM_PARTS;part++) {
       Directory dir = FSDirectory.open(Paths.get(getName(part, doDistanceSort)));
@@ -449,11 +531,11 @@ public class IndexAndSearchOpenStreetMaps {
         iwc.setMergeScheduler(new SerialMergeScheduler());
       }
       iwc.setInfoStream(new PrintStreamInfoStream(System.out));
-      IndexWriter w = new IndexWriter(dir, iwc);
+      final IndexWriter w = new IndexWriter(dir, iwc);
 
       Thread[] threads = new Thread[NUM_THREADS];
-      AtomicBoolean finished = new AtomicBoolean();
-      Object lock = new Object();
+      final AtomicBoolean finished = new AtomicBoolean();
+      final Object lock = new Object();
 
       final int finalPart = part;
 
@@ -481,32 +563,10 @@ public class IndexAndSearchOpenStreetMaps {
                     }
                   }
 
-                  for(int i=0;i<count;i++) {
-                    String[] parts = lines[i].split(",");
-                    //long id = Long.parseLong(parts[0]);
-                    double lat = Double.parseDouble(parts[1]);
-                    double lon = Double.parseDouble(parts[2]);
-                    Document doc = new Document();
-                    if (useGeo3D || useGeo3DLarge) {
-                      doc.add(new Geo3DPoint("point", lat, lon));
-                    } else if (useDocValues) {
-                      doc.add(new LatLonDocValuesField("point", lat, lon));
-                    } else if (useShape) {
-                      Field[] fields = LatLonShape.createIndexableFields("point", lat, lon);
-                      for (Field f : fields) {
-                        doc.add(f);
-                      }
-                    }  else {
-                      doc.add(new LatLonPoint("point", lat, lon));
-                      if (doDistanceSort) {
-                        doc.add(new LatLonDocValuesField("point", lat, lon));
-                      }
-                    }
-                    w.addDocument(doc);
-                    long x = totalCount.incrementAndGet();
-                    if (x % 1000000 == 0) {
-                      System.out.println(x + "...");
-                    }
+                  if (useShape) {
+                    createShapeIndex(lines, count, totalCount, w);
+                  } else {
+                    createPointIndex(lines, count, totalCount, doDistanceSort, w);
                   }
                   chunkCount++;
                   if (false && SMALL == false && chunkCount == 20000) {
@@ -515,6 +575,8 @@ public class IndexAndSearchOpenStreetMaps {
                   }
                 } catch (IOException ioe) {
                   throw new RuntimeException(ioe);
+                } catch (ParseException pe) {
+                  throw new RuntimeException(pe);
                 }
               }
             }
@@ -866,7 +928,7 @@ public class IndexAndSearchOpenStreetMaps {
                   } else if (useLatLonPoint) {
                     q = LatLonPoint.newPolygonQuery("point", new Polygon(poly[0], poly[1]));
                   } else if (useShape) {
-                    q = LatLonShape.newPolygonQuery("point", LatLonShape.QueryRelation.INTERSECTS, new Polygon(poly[0], poly[1]));
+                    q = LatLonShape.newPolygonQuery("point", QueryRelation.INTERSECTS, new Polygon(poly[0], poly[1]));
                   } else {
                     throw new AssertionError();
                   }
@@ -877,7 +939,7 @@ public class IndexAndSearchOpenStreetMaps {
                   } else if (useLatLonPoint) {
                     q = LatLonPoint.newBoxQuery("point", lat, latEnd, lon, lonEnd);
                   } else if (useShape) {
-                    q = LatLonShape.newBoxQuery("point", LatLonShape.QueryRelation.INTERSECTS, lat, latEnd, lon, lonEnd);
+                    q = LatLonShape.newBoxQuery("point", QueryRelation.INTERSECTS, lat, latEnd, lon, lonEnd);
                   } else if (useDocValues) {
                     q = LatLonDocValuesField.newSlowBoxQuery("point", lat, latEnd, lon, lonEnd);
                   } else {
@@ -922,7 +984,7 @@ public class IndexAndSearchOpenStreetMaps {
                     Sort sort = new Sort(LatLonDocValuesField.newDistanceSort("point", centerLat, centerLon));
                     for(IndexSearcher s : searchers) {
                       TopFieldDocs hits = s.search(q, 10, sort);
-                      if (hits.totalHits.relation != TotalHits.Relation.EQUAL_TO) {
+                      if (hits.totalHits.value != 10) {
                     	  // IndexSearcher can never optimize top-hits collection in that case,
                     	  // se we should get accurate hit counts
                     	  throw new AssertionError();
@@ -1029,7 +1091,7 @@ public class IndexAndSearchOpenStreetMaps {
               } else if (useLatLonPoint) {
                 q = LatLonPoint.newPolygonQuery("point", new Polygon(poly[0], poly[1]));
               } else if (useShape) {
-                q = LatLonShape.newPolygonQuery("point", LatLonShape.QueryRelation.INTERSECTS, new Polygon(poly[0], poly[1]));
+                q = LatLonShape.newPolygonQuery("point", QueryRelation.INTERSECTS, new Polygon(poly[0], poly[1]));
               } else {
                 throw new AssertionError();
               }
@@ -1042,7 +1104,7 @@ public class IndexAndSearchOpenStreetMaps {
               } else if (useDocValues) {
                 q = LatLonDocValuesField.newSlowBoxQuery("point", lat, latEnd, lon, lonEnd);
               } else if (useShape) {
-                q = LatLonShape.newBoxQuery("point", LatLonShape.QueryRelation.INTERSECTS, lat, latEnd, lon, lonEnd);
+                q = LatLonShape.newBoxQuery("point", QueryRelation.INTERSECTS, lat, latEnd, lon, lonEnd);
               } else {
                 throw new AssertionError();
               }

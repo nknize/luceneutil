@@ -25,7 +25,7 @@ import org.apache.lucene.analysis.standard.StandardAnalyzer;
 import org.apache.lucene.document.Document;
 import org.apache.lucene.document.Field;
 import org.apache.lucene.document.FieldType;
-import org.apache.lucene.document.LongField;
+import org.apache.lucene.document.LegacyLongField;
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexWriterConfig;
 import org.apache.lucene.store.Directory;
@@ -74,14 +74,14 @@ public class Index1BNumbers {
       throw new IllegalArgumentException("please remove indexPath \"" + indexPath + "\" before running");
     }
 
-    Directory dir = FSDirectory.open(indexPath);
+    Directory dir = FSDirectory.open(indexPath.toPath());
     IndexWriterConfig iwc = new IndexWriterConfig(new StandardAnalyzer());
     iwc.setRAMBufferSizeMB(512);
     final IndexWriter w = new IndexWriter(dir, iwc);
 
     final Field.Store store = Field.Store.NO;
 
-    final FieldType longFieldType = new FieldType(store == Field.Store.NO ? LongField.TYPE_NOT_STORED : LongField.TYPE_STORED);
+    final FieldType longFieldType = new FieldType(store == Field.Store.NO ? LegacyLongField.TYPE_NOT_STORED : LegacyLongField.TYPE_STORED);
     longFieldType.setNumericPrecisionStep(precStep);
     longFieldType.freeze();
 
@@ -96,7 +96,7 @@ public class Index1BNumbers {
           public void run() {
 
             Document doc = new Document();
-            Field field = new LongField("number", 0L, longFieldType);
+            Field field = new LegacyLongField("number", 0L, longFieldType);
             doc.add(field);
 
             while (true) {
