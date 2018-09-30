@@ -494,7 +494,7 @@ public class IndexAndSearchOpenStreetMaps {
     int BUFFER_SIZE = 1 << 16;     // 64K
     InputStream is;
     if (useShape) {
-     is = Files.newInputStream(Paths.get(DATA_LOCATION, "planetOSMShapes.subset.wkt"));
+     is = Files.newInputStream(Paths.get(DATA_LOCATION, "planetOSMShapes.hundred.wkt"));
     } else {
       if (SMALL) {
         is = Files.newInputStream(Paths.get(DATA_LOCATION, "latlon.subsetPlusAllLondon.txt"));
@@ -857,8 +857,8 @@ public class IndexAndSearchOpenStreetMaps {
       // Create regularly spaced shapes in a grid around London, UK:
       int STEPS = useDocValues ? 2 : 5;
       double MIN_LAT = 51.0919106;
-      double MAX_LAT = 51.6542719;
-      double MIN_LON = -0.3867282;
+      double MAX_LAT = useShape ? 52.6542719 : 51.6542719;
+      double MIN_LON = useShape ? -2.3867282 : -0.3867282;
       double MAX_LON = 0.8492337;
       
       // makeRegularPoly has insanely slow math, so make the double[]'s here.
